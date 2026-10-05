@@ -91,18 +91,30 @@ def fit_rational(model: DivisionModel, focal_length, r_max, max_angle_deg=80.0, 
     if not np.all(np.diff(r_u) > 0):
         raise ValueError("the division model is not monotonic on the fitted range")
 
-    # Linear least squares: multiplying out the denominator makes the model linear in k
-    q = r_d / r_u
     x = (r_u / f) ** 2
+
+    # Starting points. The denominator-free polynomial cannot have a pole, so there is
+    # always a valid start; the full linear solution is better but may hide a pole
+    # (a near-cancelling zero/pole pair), so it is used only when it has none.
+    poly = np.zeros(6)
+    poly[:3] = np.linalg.lstsq(np.stack([r_u * x, r_u * x**2, r_u * x**3], axis=1), r_d - r_u, rcond=None)[0]
+    starts = [poly]
+    q = r_d / r_u   # multiplying out the denominator makes the model linear in k
     a = np.stack([x, x**2, x**3, -q * x, -q * x**2, -q * x**3], axis=1)
-    k = np.linalg.lstsq(a, q - 1.0, rcond=None)[0]
+    linear = np.linalg.lstsq(a, q - 1.0, rcond=None)[0]
+    if np.all(_rational_eval(linear, r_u, f)[2] > 0):
+        starts.append(linear)
 
+    def max_error(k):
+        return float(np.max(np.abs(_rational_eval(k, r_u, f)[0] - r_d)))
+
+    candidates = list(starts)
     if refine:
-        k = _refine_rational(k, r_u, r_d, f)
+        candidates += [_refine_rational(k0, r_u, r_d, f) for k0 in starts]
+        candidates.append(_minimax_rational(min(candidates, key=max_error), r_u, r_d, f))
+    k = min(candidates, key=max_error)  # the accuracy we report is the max error
 
-    pred, _, den, _ = _rational_eval(k, r_u, f)
-    if np.any(den <= 0):
-        raise ValueError("the fitted rational model has a pole inside the fitted range")
+    pred = _rational_eval(k, r_u, f)[0]
     err = pred - r_d
     angle = float(np.degrees(model.angle(r_fit, f)))
     D = np.array([k[0], k[1], 0.0, 0.0, k[2], k[3], k[4], k[5]])
@@ -110,18 +122,38 @@ def fit_rational(model: DivisionModel, focal_length, r_max, max_angle_deg=80.0, 
                      float(np.sqrt(np.mean(err**2))), notes)
 
 
-def _refine_rational(k, r_u, r_d, f, iterations=100):
-    """Levenberg-Marquardt on the residual in distorted pixels (the linear fit minimises a proxy)."""
+def _minimax_rational(k, r_u, r_d, f, rounds=15):
+    """Lawson's iteratively reweighted least squares: drives the weighted LSQ towards the
+    smallest maximum error. Returns the best (lowest max error) parameters seen."""
+    w = np.full(len(r_d), 1.0 / len(r_d))
+    best, best_err = k, np.inf
+    for _ in range(rounds):
+        k = _refine_rational(k, r_u, r_d, f, weights=w, iterations=10)
+        e = np.abs(_rational_eval(k, r_u, f)[0] - r_d)
+        if e.max() < best_err:
+            best, best_err = k, e.max()
+        w = w * e
+        if w.sum() <= 0:
+            break
+        w /= w.sum()
+    return best
+
+
+def _refine_rational(k, r_u, r_d, f, weights=None, iterations=100):
+    """Levenberg-Marquardt on the (weighted) residual in distorted pixels, accepting only
+    steps that keep the denominator positive on the whole fitted range (no poles)."""
+    sw = np.ones_like(r_d) if weights is None else np.sqrt(weights)
+
     def residual(k):
         pred, _, den, _ = _rational_eval(k, r_u, f)
-        return pred - r_d, den
+        return sw * (pred - r_d), den
 
     res, den = residual(k)
     cost = float(res @ res)
     lam = 1e-3
     for _ in range(iterations):
         pred, num, den, x = _rational_eval(k, r_u, f)
-        cols = [r_u * x**i / den for i in (1, 2, 3)] + [-pred * x**i / den for i in (1, 2, 3)]
+        cols = [sw * r_u * x**i / den for i in (1, 2, 3)] + [-sw * pred * x**i / den for i in (1, 2, 3)]
         j = np.stack(cols, axis=1)
         scale = np.linalg.norm(j, axis=0)
         scale[scale == 0] = 1.0
@@ -159,9 +191,26 @@ def fit_fisheye(model: DivisionModel, focal_length, r_max, max_angle_deg=None, s
     theta = model.angle(r_d, f)
     if not np.all(np.diff(theta) > 0):
         raise ValueError("the division model's view angle is not monotonic on the fitted range")
-    # r_d / f = theta + k1 theta^3 + ... + k4 theta^9 is linear in k and already in pixel units
+    if theta[-1] > np.pi / 2:
+        notes.append(f"includes rays beyond 90 deg (up to {np.degrees(theta[-1]):.1f} deg); "
+                     "if the lens cannot see them, limit max_angle_deg")
+    # r_d / f = theta + k1 theta^3 + ... + k4 theta^9 is linear in k and already in pixel units.
+    # Least squares first, then Lawson's reweighting towards the smallest maximum error.
     a = np.stack([theta**3, theta**5, theta**7, theta**9], axis=1)
-    k = np.linalg.lstsq(a, r_d / f - theta, rcond=None)[0]
+    b = r_d / f - theta
+    w = np.full(len(b), 1.0 / len(b))
+    best, best_err = None, np.inf
+    for _ in range(50):
+        sw = np.sqrt(w)
+        k = np.linalg.lstsq(a * sw[:, None], b * sw, rcond=None)[0]
+        e = np.abs(a @ k - b)
+        if e.max() < best_err:
+            best, best_err = k, e.max()
+        w = w * e
+        if w.sum() <= 0:
+            break
+        w /= w.sum()
+    k = best
     pred = f * theta * (1 + k[0] * theta**2 + k[1] * theta**4 + k[2] * theta**6 + k[3] * theta**8)
     err = pred - r_d
     return FitResult("fisheye", k, f, float(r_max), float(np.degrees(theta[-1])),

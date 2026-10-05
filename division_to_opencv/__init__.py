@@ -15,4 +15,4 @@ __all__ = [
     "reference_maps",
     "map_error",
 ]
-__version__ = "0.1.0"
+__version__ = "0.2.0"

@@ -81,6 +81,38 @@ def test_fisheye_beyond_90deg():
     np.testing.assert_allclose(cv_pts[:, 0, :], pts[front], atol=1e-6)
 
 
+def test_wavy_high_order_model_fits_without_pole():
+    # Made-up model with large alternating high-order terms, like an over-fitted calibration;
+    # version 0.1.0 ended with a pole inside the range at 75 and 80 deg
+    t = (-0.25, -0.9, 2.6, -4.0, 3.1, -0.95)          # terms c_i r^(2i) at r = 1500 px
+    m = DivisionModel([ti / 1500.0 ** (2 * (i + 1)) for i, ti in enumerate(t)])
+    f, r_max = 1800.0, 1850.0
+    for angle in (40.0, 60.0, 75.0, 80.0):
+        fit = fit_rational(m, f, r_max, max_angle_deg=angle)
+        r_u = m.undistort_radius(np.linspace(0.0, fit.r_max, 100001))
+        x = (r_u / f) ** 2
+        k4, k5, k6 = fit.D[5:]
+        assert np.all(1 + k4 * x + k5 * x**2 + k6 * x**3 > 0), angle
+        assert np.isfinite(fit.max_error_px)
+    assert fit_rational(m, f, r_max, max_angle_deg=40.0).max_error_px < 0.05
+
+
+def test_max_error_is_minimised():
+    # the reported accuracy is the max error, so the fit must not trade it for rms
+    m = DivisionModel(FISHEYE["c"])
+    r_max = max_radius(FISHEYE["size"], FISHEYE["center"])
+    best = fit_rational(m, FISHEYE["f"], r_max)
+    plain = fit_rational(m, FISHEYE["f"], r_max, refine=False)
+    assert best.max_error_px <= plain.max_error_px
+
+
+def test_fisheye_notes_rays_beyond_90deg():
+    m = DivisionModel(FISHEYE["c"])
+    r_max = max_radius(FISHEYE["size"], FISHEYE["center"])
+    assert any("beyond 90 deg" in n for n in fit_fisheye(m, FISHEYE["f"], r_max).notes)
+    assert not any("beyond 90 deg" in n for n in fit_fisheye(m, FISHEYE["f"], r_max, max_angle_deg=85).notes)
+
+
 def test_non_monotonic_model_is_rejected():
     m = DivisionModel((5.0e-6,))  # r_u = r_d / (1 + c r_d^2) turns back at r_d = 447 px
     with pytest.raises(ValueError):

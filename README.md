@@ -35,14 +35,14 @@ division model c = [-2.1e-07, -4e-14], f = 1050 px, fitted up to r_d = 1105.5 px
 K = [[1050.0, 0.0, 963.4], [0.0, 1050.0, 538.2], [0.0, 0.0, 1.0]]
 
 [rational]
-  D = [0.994552899, 0.290929574, 0.0, 0.0, 0.00951194055, 1.22606457, 0.516372381, 0.0509777005]
+  D = [0.994553258, 0.289269815, 0.0, 0.0, 0.00935983015, 1.22606426, 0.514714888, 0.0504306632]
   fitted r_d <= 1105.5 px (57.0 deg off-axis)
-  error: max 0.0004 px, rms 0.0001 px
+  error: max 0.0002 px, rms 0.0001 px
 
 [fisheye]
-  D = [0.101996199, -0.0410090437, -0.00979538662, 0.00725174091]
+  D = [0.102059836, -0.0413847605, -0.00913833803, 0.00689881325]
   fitted r_d <= 1105.5 px (57.0 deg off-axis)
-  error: max 0.0108 px, rms 0.0022 px
+  error: max 0.0038 px, rms 0.0025 px
 ```
 
 Options:
@@ -107,14 +107,18 @@ Both models are radial around the same centre, so the whole conversion is a **1-
 fit**. No calibration images or detected corners are needed.
 
 * **rational**: `r_d = r_u (1 + k1 x + k2 x^2 + k3 x^3) / (1 + k4 x + k5 x^2 + k6 x^3)`,
-  `x = (r_u / f)^2`. Multiplying out the denominator makes it linear in `k`, which gives
-  the starting point; Levenberg-Marquardt then minimises the error in pixels.
-  `p1 = p2 = 0`.
+  `x = (r_u / f)^2`, `p1 = p2 = 0`. Two linear least-squares solutions give the starting
+  points: the full model with the denominator multiplied out, and the polynomial alone
+  (denominator 1). Levenberg-Marquardt then minimises the error in pixels and only accepts
+  steps that keep the denominator positive, so the result never has a pole inside the
+  fitted range.
 * **fisheye**: `r_d = f theta (1 + k1 theta^2 + ... + k4 theta^8)` is linear in `k` and
-  already in pixels, so one least-squares solve is optimal.
+  already in pixels.
 
+Both fits finish with Lawson's iteratively reweighted least squares, which minimises the
+**maximum** error rather than the rms, because the maximum is the accuracy that is reported.
 The samples are spread uniformly over the distorted radius up to the farthest image corner,
-so the whole image is covered with the same weight.
+so the whole image is covered with the same weight. A conversion takes well under a second.
 
 ## Accuracy
 
@@ -122,10 +126,10 @@ Results of `python examples/demo.py` on two made-up cameras:
 
 | Camera | Model | Fitted range | Max error |
 |---|---|---|---|
-| wide-angle, 1920x1080, f = 1050 | rational | whole image (57 deg) | 0.0004 px |
-| | fisheye | whole image (57 deg) | 0.011 px |
-| fisheye, 1280x960, f = 310 | rational | up to 80 deg | 0.066 px |
-| | fisheye | image circle (100 deg) | 0.047 px |
+| wide-angle, 1920x1080, f = 1050 | rational | whole image (57 deg) | 0.0002 px |
+| | fisheye | whole image (57 deg) | 0.004 px |
+| fisheye, 1280x960, f = 310 | rational | up to 80 deg | 0.016 px |
+| | fisheye | image circle (100 deg) | 0.024 px |
 
 ![fisheye camera](docs/fisheye.png)
 
@@ -139,6 +143,15 @@ at `max_error_px` for your camera.
   (`--size`), not just to the image border.
 * **The rational model is pinhole based** and cannot go to 90 degrees; it gets inaccurate
   beyond about 80 degrees. Use the fisheye model for wider lenses.
+* **High-order calibrations may not convert exactly.** A division model with many
+  coefficients whose terms are large and of alternating sign (typical of an over-fitted
+  calibration) has a wavy curve that 6 rational or 4 fisheye coefficients cannot follow
+  exactly; expect tenths of a pixel or more. Check `max_error_px` and, if it is too high,
+  lower `--max-angle` to the part of the image you need. Such a polynomial may also reach
+  `P = 0` (90 degrees) inside the image corners although the lens cannot see that far.
+* **The fisheye fit includes rays beyond 90 degrees** when the model reaches them within
+  the fitted radius (the result then carries a note). If your lens cannot see them, limit
+  the fit with `--fisheye-max-angle`.
 * **`cv2.fisheye.projectPoints` cannot project rays beyond 90 degrees** (it divides by
   `z`). The fitted coefficients still describe them; use
   `division_to_opencv.project_fisheye` to project such points.

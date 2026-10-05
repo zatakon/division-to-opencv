@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "division-to-opencv"
-version = "0.1.0"
+version = "0.2.0"
 description = "Fit OpenCV distortion coefficients (rational or fisheye) that reproduce a division-model undistortion, with sub-pixel accuracy and no calibration images."
 readme = "README.md"
 authors = [{ name = "J. Meindl" }]
