@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "division-to-opencv"
+version = "0.1.0"
+description = "Fit OpenCV distortion coefficients (rational or fisheye) that reproduce a division-model undistortion, with sub-pixel accuracy and no calibration images."
+readme = "README.md"
+authors = [{ name = "J. Meindl" }]
+license = "MIT"
+requires-python = ">=3.10"
+keywords = ["opencv", "camera-calibration", "lens-distortion", "division-model", "fisheye"]
+dependencies = [
+    "numpy",
+    "opencv-python-headless",
+]
+
+[project.optional-dependencies]
+examples = ["matplotlib"]
+dev = ["pytest"]
+
+[project.scripts]
+division-to-opencv = "division_to_opencv.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["division_to_opencv*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
